@@ -11,4 +11,5 @@ private:
 	SOSDReader& reader_; 
 	uint32_t blockSize_; 
 	std::vector<uint32_t> blockMax_; 
+	std::vector<uint32_t> blockBuffer_;
 };
