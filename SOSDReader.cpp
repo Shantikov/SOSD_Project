@@ -24,7 +24,12 @@ void SOSDReader::readBlock(uint64_t start, uint32_t count,
 	if (start >= n_) { out.clear(); return; } 
 	uint32_t actual = static_cast<uint32_t>(
 		std::min<uint64_t>(count, n_ - start)); 
-	out.resize(actual); 
-	file_.seekg(dataOffset_ + start * 4, std::ios::beg); 
-	file_.read(reinterpret_cast<char*>(out.data()), actual * 4); 
+	out.resize(actual);
+	const auto bytes = static_cast<std::streamsize>(actual) *
+		static_cast<std::streamsize>(sizeof(uint32_t));
+	if (!file_.seekg(dataOffset_ + start * 4, std::ios::beg) ||
+		!file_.read(reinterpret_cast<char*>(out.data()), bytes)) {
+		out.clear();
+		throw std::runtime_error("cannot read complete SOSD block");
+	}
 }
