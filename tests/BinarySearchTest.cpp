@@ -1,7 +1,7 @@
 // 기준 탐색(BinarySearch) 검증 프로그램 - 담당 2
 // 빌드(Linux/Mac): g++ -std=c++17 -O2 -I.. BinarySearchTest.cpp ../BinarySearch.cpp ../SOSDReader.cpp -o bs_test
-// 빌드(Windows): VS 개발자 명령 프롬프트에서
-//   cl /std:c++17 /EHsc /O2 /I.. BinarySearchTest.cpp ..\BinarySearch.cpp ..\SOSDReader.cpp /Fe:bs_test.exe
+// 빌드(Windows): VS 개발자 명령 프롬프트에서 tests 폴더로 이동한 뒤 실행
+//   cl /utf-8 /std:c++17 /EHsc /O2 /I.. BinarySearchTest.cpp ..\BinarySearch.cpp ..\SOSDReader.cpp /Fe:bs_test.exe
 // main.cpp(측정용)와는 별개 프로그램이므로 SOSD 메인 프로젝트에는 추가하지 않는다.
 #include <algorithm>
 #include <cstdint>
@@ -37,8 +37,6 @@ static uint64_t oracle(const std::vector<uint32_t>& v, uint32_t key) {
 
 int main() {
     // ---- 1) 소형 검증 파일 + 정답표 ----
-    std::vector<uint32_t> small = {5, 10, 10, 10, 20, 30, 30, 40, 50, 60};
-    writeSosd("small_test.bin", small);
     struct Case { const char* what; uint32_t key; uint64_t expected; };
     const Case cases[] = {
         {"첫 키",            5,    0},
