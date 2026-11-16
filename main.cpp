@@ -1,93 +1,111 @@
-﻿#include <chrono>
-#include <fstream>
+﻿#include <charconv>
+#include <cstdint>
+#include <exception>
 #include <iostream>
-#include <random>
+#include <stdexcept>
 #include <string>
-#include <vector>
-#include <windows.h>
-#include <psapi.h>
+#include <string_view>
 
-#include "SOSDReader.h"
+#include "Benchmark.h"
 #include "BinarySearch.h"
 #include "BlockIndex.h"
+#include "MemoryLimit.h"
+#include "SOSDReader.h"
 
-#pragma comment(lib, "psapi.lib")
+namespace {
 
-static double nowMs() { 
-	using namespace std::chrono; 
-	return duration_cast<microseconds>(
-		steady_clock::now().time_since_epoch()).count() / 1000.0; 
+constexpr std::uint32_t defaultBlockSize = 4096;
+constexpr std::uint32_t defaultQueriesPerKind = 1000;
+
+std::uint32_t parseNumber(std::string_view text, const char* label, bool positive = false) {
+    std::uint32_t value = 0;
+    const auto last = text.data() + text.size();
+    const auto result = std::from_chars(text.data(), last, value);
+    if (result.ec != std::errc{} || result.ptr != last || (positive && value == 0)) {
+        throw std::invalid_argument(std::string(label) +
+            (positive ? " must be a positive 32-bit integer" : " must be an unsigned 32-bit integer"));
+    }
+    return value;
 }
 
-static size_t peakMemoryKB() { 
-	PROCESS_MEMORY_COUNTERS pmc; 
-	if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) 
-		return pmc.PeakWorkingSetSize / 1024; 
-	return 0; 
+void findKey(const char* path, std::uint32_t key, std::uint32_t blockSize) {
+    SOSDReader reader(path);
+    BlockIndex searcher(reader, blockSize);
+    searcher.build();
+    const auto position = searcher.find(key);
+    if (position == NOT_FOUND) {
+        std::cout << "NOT_FOUND\n";
+    } else {
+        std::cout << position << '\n';
+    }
 }
 
-int main(int argc, char** argv) { 
-	if (argc < 3) { 
-		std::cerr << "Usage: SOSD.exe <datafile_uint32> <blockSize>\n"; 
-		return 1; 
-	} 
-	std::string path = argv[1]; 
-	uint32_t blockSize = static_cast<uint32_t>(std::stoul(argv[2])); 
-	
-	std::cout << "file: " << path << "\n"; 
-	SOSDReader reader(path); 
-	std::cout << "n = " << reader.size() << "\n"; 
-	
-	const int NUM_QUERIES = 1000; 
-	std::mt19937 rng(42); 
-	std::uniform_int_distribution<uint64_t> dist(0, reader.size() - 1); 
-	std::vector<uint32_t> hitQueries, missQueries; 
-	
-	for (int i = 0; i < NUM_QUERIES; ++i) 
-		hitQueries.push_back(static_cast<uint32_t>(reader.readKey(dist(rng)))); 
-	
-	std::uniform_int_distribution<uint32_t> missDist(1, UINT32_MAX); 
-	for (int i = 0; i < NUM_QUERIES; ++i) 
-		missQueries.push_back(missDist(rng)); 
-	
-	BinarySearch bs(reader); 
-	double t0 = nowMs(); 
-	bs.build(); 
-	double buildBs = nowMs() - t0; 
-	double hitBs = 0, missBs = 0; 
-	t0 = nowMs(); 
-	for (auto k : hitQueries) bs.find(k); 
-	hitBs = nowMs() - t0; 
-	t0 = nowMs(); 
-	for (auto k : missQueries) bs.find(k); 
-	missBs = nowMs() - t0; 
-	size_t memBs = peakMemoryKB(); 
-	
-	BlockIndex bi(reader, blockSize); 
-	t0 = nowMs(); 
-	bi.build(); 
-	double buildBi = nowMs() - t0; 
-	double hitBi = 0, missBi = 0; 
-	t0 = nowMs(); 
-	for (auto k : hitQueries) bi.find(k); 
-	hitBi = nowMs() - t0; t0 = nowMs(); 
-	for (auto k : missQueries) bi.find(k); 
-	missBi = nowMs() - t0; 
-	size_t memBi = peakMemoryKB(); 
-	
-	std::cout << "\n[Full binary search]\n" 
-		<< "build_ms=" << buildBs << "\n" 
-		<< "hit_1000_ms=" << hitBs << "\n" 
-		<< "miss_1000_ms=" << missBs << "\n" 
-		<< "total_ms=" << buildBs + hitBs + missBs << "\n" 
-		<< "peak_mem_kb=" << memBs << "\n"; 
-	
-	std::cout << "\n[Block index, blockSize=" << blockSize << "]\n" 
-		<< "build_ms=" << buildBi << "\n" 
-		<< "hit_1000_ms=" << hitBi << "\n" 
-		<< "miss_1000_ms=" << missBi << "\n" 
-		<< "total_ms=" << buildBi + hitBi + missBi << "\n" 
-		<< "peak_mem_kb=" << memBi << "\n"; 
-	
-	return 0; 
+void benchmark(const char* path, std::string_view method, std::uint32_t blockSize,
+               std::uint32_t queriesPerKind, const ProcessMemoryLimit& memoryLimit) {
+    SOSDReader reader(path);
+    const auto queries = makeBenchmarkQueries(reader, queriesPerKind);
+    if (method == "binary" || method == "both") {
+        BinarySearch searcher(reader);
+        runBenchmark(searcher, queries);
+    }
+    if (method == "block" || method == "both") {
+        BlockIndex searcher(reader, blockSize);
+        std::cout << "block_size=" << blockSize << '\n';
+        runBenchmark(searcher, queries);
+    }
+    std::cout << "peak_process_commit_bytes=" << memoryLimit.peakBytes() << '\n';
+}
+
+void printUsage(std::ostream& out) {
+    out << "Usage:\n"
+        << "  SOSD.exe find <datafile_uint32> <key> [blockSize]\n"
+        << "  SOSD.exe bench <datafile_uint32> binary [queriesPerKind]\n"
+        << "  SOSD.exe bench <datafile_uint32> block <blockSize> [queriesPerKind]\n"
+        << "  SOSD.exe <datafile_uint32> <blockSize>\n";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--help")) {
+        printUsage(std::cout);
+        return argc == 1 ? 1 : 0;
+    }
+
+    try {
+        const ProcessMemoryLimit memoryLimit;
+        const std::string_view mode = argv[1];
+        if (mode == "find" && (argc == 4 || argc == 5)) {
+            const auto key = parseNumber(argv[3], "key");
+            const auto blockSize = argc == 5 ? parseNumber(argv[4], "block size", true)
+                                             : defaultBlockSize;
+            findKey(argv[2], key, blockSize);
+            return 0;
+        }
+        if (mode == "bench" && argc >= 4) {
+            const std::string_view method = argv[3];
+            if (method == "binary" && (argc == 4 || argc == 5)) {
+                const auto count = argc == 5 ? parseNumber(argv[4], "queries per kind", true)
+                                             : defaultQueriesPerKind;
+                benchmark(argv[2], method, defaultBlockSize, count, memoryLimit);
+                return 0;
+            }
+            if (method == "block" && (argc == 5 || argc == 6)) {
+                const auto blockSize = parseNumber(argv[4], "block size", true);
+                const auto count = argc == 6 ? parseNumber(argv[5], "queries per kind", true)
+                                             : defaultQueriesPerKind;
+                benchmark(argv[2], method, blockSize, count, memoryLimit);
+                return 0;
+            }
+        }
+        if (mode != "find" && mode != "bench" && argc == 3) {
+            benchmark(argv[1], "both", parseNumber(argv[2], "block size", true),
+                      defaultQueriesPerKind, memoryLimit);
+            return 0;
+        }
+        printUsage(std::cerr);
+    } catch (const std::exception& error) {
+        std::cerr << "Error: " << error.what() << '\n';
+    }
+    return 1;
 }
