@@ -11,45 +11,14 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
-#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <vector>
 #include "SOSDReader.h"
+#include "TemporaryTestFiles.h"
 
 namespace fs = std::filesystem;
-
-class ReaderTestFiles {
-public:
-    ReaderTestFiles() {
-        const auto parent = fs::temp_directory_path();
-        std::random_device random;
-        for (int attempt = 0; attempt < 16; ++attempt) {
-            directory_ = parent / ("sosd-reader-test-" + std::to_string(random()));
-            fixture_ = directory_ / "reader_tmp.bin";
-            if (fs::create_directory(directory_)) return;
-        }
-        throw std::runtime_error("cannot create temporary SOSD reader test directory");
-    }
-
-    ReaderTestFiles(const ReaderTestFiles&) = delete;
-    ReaderTestFiles& operator=(const ReaderTestFiles&) = delete;
-
-    ~ReaderTestFiles() {
-        std::error_code ignored;
-        fs::remove(fixture_, ignored);
-        fs::remove(directory_, ignored);
-    }
-
-    const fs::path& fixture() const { return fixture_; }
-    fs::path missingFile() const { return directory_ / "no_such_file.bin"; }
-
-private:
-    fs::path directory_;
-    fs::path fixture_;
-};
 
 static int failed = 0, passed = 0;
 
@@ -169,7 +138,7 @@ static int run(int argc, char** argv) {
         std::cout << "expected table rows checked: " << rows << "\n";
     }
 
-    const ReaderTestFiles temp;
+    const TemporaryTestFiles temp;
     const auto fixture = temp.fixture().string();
 
     // ---- 5) 빈 파일(n=0) ----
