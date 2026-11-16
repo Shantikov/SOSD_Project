@@ -5,19 +5,24 @@
 // main.cpp(측정용)와는 별개 프로그램이므로 SOSD 메인 프로젝트에는 추가하지 않는다.
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "BinarySearch.h"
+#include "TemporaryTestFiles.h"
 
 // SOSD 형식: [uint64 원소 개수][uint32 키 * n]
-static void writeSosd(const std::string& path, const std::vector<uint32_t>& keys) {
+static void writeSosd(const std::filesystem::path& path, const std::vector<uint32_t>& keys) {
     std::ofstream f(path, std::ios::binary);
     uint64_t n = keys.size();
     f.write(reinterpret_cast<const char*>(&n), 8);
     if (n) f.write(reinterpret_cast<const char*>(keys.data()), n * 4);
+    f.close();
+    if (!f) throw std::runtime_error("cannot write binary search test fixture");
 }
 
 static int failed = 0, passed = 0;
@@ -35,7 +40,7 @@ static uint64_t oracle(const std::vector<uint32_t>& v, uint32_t key) {
     return (it != v.end() && *it == key) ? uint64_t(it - v.begin()) : NOT_FOUND;
 }
 
-int main() {
+int main() try {
     // ---- 1) 소형 검증 파일 + 정답표 ----
     struct Case { const char* what; uint32_t key; uint64_t expected; };
     const Case cases[] = {
@@ -65,11 +70,14 @@ int main() {
         }
     }
 
+    const TemporaryTestFiles temp;
+    const auto fixture = temp.fixture().string();
+
     // ---- 2) 경계 크기 파일: n=0, n=1, n=2 ----
     for (std::vector<uint32_t> v : {std::vector<uint32_t>{}, std::vector<uint32_t>{7},
                                     std::vector<uint32_t>{7, 7}}) {
-        writeSosd("edge_test.bin", v);
-        SOSDReader r("edge_test.bin");
+        writeSosd(temp.fixture(), v);
+        SOSDReader r(fixture);
         BinarySearch bs(r);
         for (uint32_t k : {0u, 6u, 7u, 8u, UINT32_MAX})
             check("n=" + std::to_string(v.size()) + " key=" + std::to_string(k), bs.find(k), oracle(v, k));
@@ -79,8 +87,8 @@ int main() {
     {
         std::vector<uint32_t> v(5000, 42);
         v.insert(v.end(), 3000, 100);
-        writeSosd("dup_test.bin", v);
-        SOSDReader r("dup_test.bin");
+        writeSosd(temp.fixture(), v);
+        SOSDReader r(fixture);
         BinarySearch bs(r);
         check("dup 42 첫 위치", bs.find(42), 0);
         check("dup 100 첫 위치", bs.find(100), 5000);
@@ -93,8 +101,8 @@ int main() {
         std::vector<uint32_t> v(20000);
         for (auto& x : v) x = rng() % 50000;          // 중복 다수
         std::sort(v.begin(), v.end());
-        writeSosd("rand_test.bin", v);
-        SOSDReader r("rand_test.bin");
+        writeSosd(temp.fixture(), v);
+        SOSDReader r(fixture);
         BinarySearch bs(r);
         for (uint32_t k = 0; k < 50010; ++k)           // 존재/부재 키 전부
             check("rand key=" + std::to_string(k), bs.find(k), oracle(v, k));
@@ -106,4 +114,7 @@ int main() {
 
     std::cout << "\n통과 " << passed << " / 실패 " << failed << "\n";
     return failed ? 1 : 0;
+} catch (const std::exception& error) {
+    std::cerr << "ERROR: " << error.what() << '\n';
+    return 2;
 }
