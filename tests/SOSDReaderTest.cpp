@@ -7,15 +7,49 @@
 // (tests 폴더, 프로젝트 루트, Visual Studio 프로젝트 폴더 어디서 실행해도 된다).
 // 실제 SOSD 파일의 헤더 확인: reader_test <datafile_uint32>
 #include <cstdint>
-#include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 #include "SOSDReader.h"
+
+namespace fs = std::filesystem;
+
+class ReaderTestFiles {
+public:
+    ReaderTestFiles() {
+        const auto parent = fs::temp_directory_path();
+        std::random_device random;
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            directory_ = parent / ("sosd-reader-test-" + std::to_string(random()));
+            fixture_ = directory_ / "reader_tmp.bin";
+            if (fs::create_directory(directory_)) return;
+        }
+        throw std::runtime_error("cannot create temporary SOSD reader test directory");
+    }
+
+    ReaderTestFiles(const ReaderTestFiles&) = delete;
+    ReaderTestFiles& operator=(const ReaderTestFiles&) = delete;
+
+    ~ReaderTestFiles() {
+        std::error_code ignored;
+        fs::remove(fixture_, ignored);
+        fs::remove(directory_, ignored);
+    }
+
+    const fs::path& fixture() const { return fixture_; }
+    fs::path missingFile() const { return directory_ / "no_such_file.bin"; }
+
+private:
+    fs::path directory_;
+    fs::path fixture_;
+};
 
 static int failed = 0, passed = 0;
 
@@ -32,10 +66,12 @@ static void expectThrow(const std::string& label, const std::function<void()>& f
     std::cout << "FAIL " << label << " (expected exception)\n";
 }
 
-static void writeRaw(const std::string& path, uint64_t n, const void* data, size_t bytes) {
+static void writeRaw(const fs::path& path, uint64_t n, const void* data, size_t bytes) {
     std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(&n), 8);
     if (bytes) f.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
+    f.close();
+    if (!f) throw std::runtime_error("cannot write SOSD reader test fixture");
 }
 
 // 검증용 데이터 파일을 실행 위치와 무관하게 찾는다.
@@ -133,10 +169,13 @@ static int run(int argc, char** argv) {
         std::cout << "expected table rows checked: " << rows << "\n";
     }
 
+    const ReaderTestFiles temp;
+    const auto fixture = temp.fixture().string();
+
     // ---- 5) 빈 파일(n=0) ----
     {
-        writeRaw("reader_tmp.bin", 0, nullptr, 0);
-        SOSDReader r("reader_tmp.bin");
+        writeRaw(temp.fixture(), 0, nullptr, 0);
+        SOSDReader r(fixture);
         check("empty n == 0", r.size() == 0);
         expectThrow<std::out_of_range>("empty readKey(0)", [&] { r.readKey(0); });
         std::vector<uint32_t> out = {1, 2};
@@ -145,25 +184,27 @@ static int run(int argc, char** argv) {
     }
 
     // ---- 6) 잘못된 파일은 생성자에서 거부 ----
-    expectThrow<std::runtime_error>("missing file", [] { SOSDReader r("no_such_file.bin"); });
+    expectThrow<std::runtime_error>("missing file", [&] { SOSDReader r(temp.missingFile().string()); });
     {
-        std::ofstream("reader_tmp.bin", std::ios::binary).write("abc", 3);
-        expectThrow<std::runtime_error>("short header", [] { SOSDReader r("reader_tmp.bin"); });
+        std::ofstream shortHeader(temp.fixture(), std::ios::binary);
+        shortHeader.write("abc", 3);
+        shortHeader.close();
+        if (!shortHeader) throw std::runtime_error("cannot write short-header test fixture");
+        expectThrow<std::runtime_error>("short header", [&] { SOSDReader r(fixture); });
 
-        writeRaw("reader_tmp.bin", 10, keys.data(), 9 * 4);      // 키 1개 부족
-        expectThrow<std::runtime_error>("truncated data", [] { SOSDReader r("reader_tmp.bin"); });
+        writeRaw(temp.fixture(), 10, keys.data(), 9 * 4);      // 키 1개 부족
+        expectThrow<std::runtime_error>("truncated data", [&] { SOSDReader r(fixture); });
 
-        writeRaw("reader_tmp.bin", 5, keys.data(), 10 * 4);      // 헤더보다 데이터가 많음
-        expectThrow<std::runtime_error>("extra data", [] { SOSDReader r("reader_tmp.bin"); });
+        writeRaw(temp.fixture(), 5, keys.data(), 10 * 4);      // 헤더보다 데이터가 많음
+        expectThrow<std::runtime_error>("extra data", [&] { SOSDReader r(fixture); });
 
         const std::vector<uint64_t> wide = {1, 2, 3};            // uint64 데이터셋
-        writeRaw("reader_tmp.bin", 3, wide.data(), 3 * 8);
-        expectThrow<std::runtime_error>("uint64 dataset", [] { SOSDReader r("reader_tmp.bin"); });
+        writeRaw(temp.fixture(), 3, wide.data(), 3 * 8);
+        expectThrow<std::runtime_error>("uint64 dataset", [&] { SOSDReader r(fixture); });
 
-        writeRaw("reader_tmp.bin", UINT64_MAX, keys.data(), 4);  // n*4 오버플로
-        expectThrow<std::runtime_error>("huge n", [] { SOSDReader r("reader_tmp.bin"); });
+        writeRaw(temp.fixture(), UINT64_MAX, keys.data(), 4);  // n*4 오버플로
+        expectThrow<std::runtime_error>("huge n", [&] { SOSDReader r(fixture); });
     }
-    std::remove("reader_tmp.bin");
 
     std::cout << "\npassed " << passed << " / failed " << failed << "\n";
     return failed ? 1 : 0;
